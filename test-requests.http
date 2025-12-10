@@ -1,0 +1,97 @@
+@AUTH_TOKEN = {{$dotenv AUTH_TOKEN}}
+@SESSION_ID = 04417352-6521-4635-ad43-f2d3030301ff
+
+GET http://127.0.0.1:3000/health
+
+###
+
+POST http://127.0.0.1:3000/mcp
+Authorization: Bearer {{AUTH_TOKEN}}
+Content-Type: application/json
+Accept: application/json, text/event-stream
+
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "protocolVersion": "2.0",
+        "capabilities": {
+            "methods": [
+                "slack_list_channels",
+                "slack_post_message",
+                "slack_reply_to_thread",
+                "slack_add_reaction",
+                "slack_get_channel_history",
+                "slack_get_thread_replies",
+                "slack_get_users",
+                "slack_get_user_profile"
+            ]
+        },
+        "clientInfo": {
+            "name": "TestClient",
+            "version": "1.0.0"
+        }
+    }
+}
+
+###
+
+POST http://127.0.0.1:3000/mcp
+Authorization: Bearer {{AUTH_TOKEN}}
+Content-Type: application/json
+Accept: application/json, text/event-stream
+mcp-session-id: {{SESSION_ID}}
+
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+        "name": "slack_list_channels",
+        "arguments": {
+            "limit": 10
+        }
+    }
+}
+
+
+###
+
+POST http://127.0.0.1:3000/mcp
+Authorization: Bearer {{AUTH_TOKEN}}
+Content-Type: application/json
+Accept: application/json, text/event-stream 
+mcp-session-id: {{SESSION_ID}}
+
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/list",
+    "params": {}
+}
+
+###
+
+POST http://127.0.0.1:3000/mcp
+Authorization: Bearer {{AUTH_TOKEN}}
+Content-Type: application/json
+Accept: application/json, text/event-stream 
+mcp-session-id: {{SESSION_ID}}
+
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+        "name": "slack_post_message",
+        "arguments": {
+            "channel_id": "C1U5SSXCW",
+            "text": "Hello, this is a test message from my MCP server!"
+        }
+    }
+}
+
+###
+GET https://slack-gov.com/api/conversations.list?types=public_channel,private_channel&exclude_archived=true&limit=200&team_id={{$dotenv SLACK_TEAM_ID}}
+Authorization: Bearer {{$dotenv SLACK_BOT_TOKEN}}
