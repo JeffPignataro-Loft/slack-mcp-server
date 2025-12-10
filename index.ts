@@ -52,12 +52,14 @@ interface GetUserProfileArgs {
 
 export class SlackClient {
   private botHeaders: { Authorization: string; "Content-Type": string };
+  private slackDomain: string;
 
   constructor(botToken: string) {
     this.botHeaders = {
       Authorization: `Bearer ${botToken}`,
       "Content-Type": "application/json",
     };
+    this.slackDomain = process.env.SLACK_DOMAIN || 'slack.com';
   }
 
   async getChannels(limit: number = 100, cursor?: string): Promise<any> {
@@ -69,16 +71,16 @@ export class SlackClient {
         limit: Math.min(limit, 200).toString(),
         team_id: process.env.SLACK_TEAM_ID!,
       });
-  
+
       if (cursor) {
         params.append("cursor", cursor);
       }
-  
+
       const response = await fetch(
-        `https://slack.com/api/conversations.list?${params}`,
+        `https://${this.slackDomain}/api/conversations.list?${params}`,
         { headers: this.botHeaders },
       );
-  
+
       return response.json();
     }
 
@@ -91,7 +93,7 @@ export class SlackClient {
       });
 
       const response = await fetch(
-        `https://slack.com/api/conversations.info?${params}`,
+        `https://${this.slackDomain}/api/conversations.info?${params}`,
         { headers: this.botHeaders }
       );
       const data = await response.json();
@@ -109,7 +111,7 @@ export class SlackClient {
   }
 
   async postMessage(channel_id: string, text: string): Promise<any> {
-    const response = await fetch("https://slack.com/api/chat.postMessage", {
+    const response = await fetch(`https://${this.slackDomain}/api/chat.postMessage`, {
       method: "POST",
       headers: this.botHeaders,
       body: JSON.stringify({
@@ -126,7 +128,7 @@ export class SlackClient {
     thread_ts: string,
     text: string,
   ): Promise<any> {
-    const response = await fetch("https://slack.com/api/chat.postMessage", {
+    const response = await fetch(`https://${this.slackDomain}/api/chat.postMessage`, {
       method: "POST",
       headers: this.botHeaders,
       body: JSON.stringify({
@@ -144,7 +146,7 @@ export class SlackClient {
     timestamp: string,
     reaction: string,
   ): Promise<any> {
-    const response = await fetch("https://slack.com/api/reactions.add", {
+    const response = await fetch(`https://${this.slackDomain}/api/reactions.add`, {
       method: "POST",
       headers: this.botHeaders,
       body: JSON.stringify({
@@ -167,7 +169,7 @@ export class SlackClient {
     });
 
     const response = await fetch(
-      `https://slack.com/api/conversations.history?${params}`,
+      `https://${this.slackDomain}/api/conversations.history?${params}`,
       { headers: this.botHeaders },
     );
 
@@ -181,7 +183,7 @@ export class SlackClient {
     });
 
     const response = await fetch(
-      `https://slack.com/api/conversations.replies?${params}`,
+      `https://${this.slackDomain}/api/conversations.replies?${params}`,
       { headers: this.botHeaders },
     );
 
@@ -198,7 +200,7 @@ export class SlackClient {
       params.append("cursor", cursor);
     }
 
-    const response = await fetch(`https://slack.com/api/users.list?${params}`, {
+    const response = await fetch(`https://${this.slackDomain}/api/users.list?${params}`, {
       headers: this.botHeaders,
     });
 
@@ -212,7 +214,7 @@ export class SlackClient {
     });
 
     const response = await fetch(
-      `https://slack.com/api/users.profile.get?${params}`,
+      `https://${this.slackDomain}/api/users.profile.get?${params}`,
       { headers: this.botHeaders },
     );
 
@@ -221,9 +223,11 @@ export class SlackClient {
 }
 
 export function createSlackServer(slackClient: SlackClient): McpServer {
+  console.error('Creating Slack MCP Server');
   const server = new McpServer({
     name: "Slack MCP Server",
     version: "1.0.0",
+    debug: true,
   });
 
   // Register all Slack tools using the modern API
@@ -385,9 +389,12 @@ async function runStdioServer(slackClient: SlackClient) {
 
 async function runHttpServer(slackClient: SlackClient, port: number = 3000, authToken?: string) {
   console.error(`Starting Slack MCP Server with Streamable HTTP transport on port ${port}...`);
-  
+
   const app = express();
   app.use(express.json());
+
+  // Create a single server instance to be shared across all transports
+  const mcpServer = createSlackServer(slackClient);
 
   // Authorization middleware
   const authMiddleware = (req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -429,18 +436,26 @@ async function runHttpServer(slackClient: SlackClient, port: number = 3000, auth
   // Handle POST requests for client-to-server communication
   app.post('/mcp', authMiddleware, async (req, res) => {
     try {
-      // Check for existing session ID
-      const sessionId = req.headers['mcp-session-id'] as string | undefined;
+      // Check for existing session ID from header or query parameter
+      const sessionId = req.headers['mcp-session-id'] as string | undefined || req.query['mcp-session-id'] as string | undefined;
+      console.error(`POST request received - Session ID: ${sessionId}, Method: ${req.body?.method}`);
+      console.error(`Available sessions: ${Object.keys(transports).join(', ')}`);
+      console.error(`Request headers: ${JSON.stringify(req.headers, null, 2)}`);
+      console.error(`Request body: ${JSON.stringify(req.body, null, 2)}`);
+
       let transport: StreamableHTTPServerTransport;
 
       if (sessionId && transports[sessionId]) {
         // Reuse existing transport
+        console.error(`Reusing existing transport for session: ${sessionId}`);
         transport = transports[sessionId];
       } else if (!sessionId && req.body?.method === 'initialize') {
+        console.error('Creating new transport for initialization request');
         // New initialization request
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (sessionId) => {
+            console.error(`Session initialized with ID: ${sessionId}`);
             // Store the transport by session ID
             transports[sessionId] = transport;
           },
@@ -453,9 +468,15 @@ async function runHttpServer(slackClient: SlackClient, port: number = 3000, auth
           }
         };
 
-        const server = createSlackServer(slackClient);
-        // Connect to the MCP server
-        await server.connect(transport);
+        // Connect to the shared MCP server instance
+        await mcpServer.connect(transport);
+        console.error(`Server connected to transport. Session ID: ${transport.sessionId}`);
+        // If this is an initialize request, handle it immediately
+        if (req.body?.method === 'initialize') {
+          console.error('Handling initialize request directly');
+          await transport.handleRequest(req, res, req.body);
+          return; // Return early since we've already handled the request
+        }
       } else {
         // Invalid request
         res.status(400).json({
@@ -470,7 +491,22 @@ async function runHttpServer(slackClient: SlackClient, port: number = 3000, auth
       }
 
       // Handle the request
-      await transport.handleRequest(req, res, req.body);
+      console.error(`Handling request with method: ${req.body?.method}, Session ID: ${transport.sessionId}`);
+      try {
+        await transport.handleRequest(req, res, req.body);
+      } catch (error) {
+        console.error(`Error handling request: ${error}`);
+        if (!res.headersSent) {
+          res.status(500).json({
+            jsonrpc: '2.0',
+            error: {
+              code: -32603,
+              message: `Internal error: ${error}`,
+            },
+            id: req.body?.id || null,
+          });
+        }
+      }
     } catch (error) {
       console.error('Error handling MCP request:', error);
       if (!res.headersSent) {
@@ -488,12 +524,12 @@ async function runHttpServer(slackClient: SlackClient, port: number = 3000, auth
 
   // Reusable handler for GET and DELETE requests
   const handleSessionRequest = async (req: express.Request, res: express.Response) => {
-    const sessionId = req.headers['mcp-session-id'] as string | undefined;
+    const sessionId = req.headers['mcp-session-id'] as string | undefined || req.query['mcp-session-id'] as string | undefined;
     if (!sessionId || !transports[sessionId]) {
       res.status(400).send('Invalid or missing session ID');
       return;
     }
-    
+
     const transport = transports[sessionId];
     await transport.handleRequest(req, res);
   };
@@ -544,11 +580,12 @@ Usage: node index.js [options]
 Options:
   --transport <type>     Transport type: 'stdio' or 'http' (default: stdio)
   --port <number>        Port for HTTP server when using Streamable HTTP transport (default: 3000)
-  --token <token>   Bearer token for HTTP authorization (optional, can also use AUTH_TOKEN env var)
+  --token <token>        Bearer token for HTTP authorization (optional, can also use AUTH_TOKEN env var)
   --help, -h             Show this help message
 
 Environment Variables:
   AUTH_TOKEN             Bearer token for HTTP authorization (fallback if --token not provided)
+  SLACK_DOMAIN           Domain to use for Slack API calls (default: slack.com)
 
 Examples:
   node index.js                                    # Use stdio transport (default)
@@ -577,9 +614,10 @@ Examples:
 
 export async function main() {
   const { transport, port, authToken } = parseArgs();
-  
+
   const botToken = process.env.SLACK_BOT_TOKEN;
   const teamId = process.env.SLACK_TEAM_ID;
+  const slackDomain = process.env.SLACK_DOMAIN || 'slack.com';
 
   if (!botToken || !teamId) {
     console.error(
@@ -588,6 +626,8 @@ export async function main() {
     process.exit(1);
   }
 
+  console.error(`Using Slack domain: ${slackDomain}`);
+
   const slackClient = new SlackClient(botToken);
   let httpServer: any = null;
 
@@ -595,13 +635,13 @@ export async function main() {
   const setupGracefulShutdown = () => {
     const shutdown = (signal: string) => {
       console.error(`\nReceived ${signal}. Shutting down gracefully...`);
-      
+
       if (httpServer) {
         httpServer.close(() => {
           console.error('HTTP server closed.');
           process.exit(0);
         });
-        
+
         // Force close after 5 seconds
         setTimeout(() => {
           console.error('Forcing shutdown...');
@@ -633,7 +673,7 @@ export async function main() {
     } else {
       console.error('Using auth token from AUTH_TOKEN environment variable');
     }
-    
+
     httpServer = await runHttpServer(slackClient, port, finalAuthToken);
   }
 }
@@ -643,19 +683,19 @@ export async function main() {
 if (import.meta.url.startsWith('file://')) {
   const currentFile = fileURLToPath(import.meta.url);
   const executedFile = process.argv[1] ? resolve(process.argv[1]) : '';
-  
+
   // Check if this is the main module being executed
   // Don't run if we're in a test environment (jest)
-  const isTestEnvironment = process.argv.some(arg => arg.includes('jest')) || 
-                            process.env.NODE_ENV === 'test' ||
-                            process.argv[1]?.includes('jest');
-  
+  const isTestEnvironment = process.argv.some(arg => arg.includes('jest')) ||
+    process.env.NODE_ENV === 'test' ||
+    process.argv[1]?.includes('jest');
+
   const isMainModule = !isTestEnvironment && (
-    currentFile === executedFile || 
+    currentFile === executedFile ||
     (process.argv[1] && process.argv[1].includes('slack-mcp')) ||
     (process.argv[0].includes('node') && process.argv[1] && !process.argv[1].includes('test'))
   );
-  
+
   if (isMainModule) {
     main().catch((error) => {
       console.error("Fatal error in main():", error);
